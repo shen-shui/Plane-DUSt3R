@@ -6,6 +6,7 @@
 # --------------------------------------------------------
 from copy import deepcopy
 import torch
+import torch.nn.functional as F
 import os
 from packaging import version
 import huggingface_hub
@@ -63,8 +64,10 @@ class AsymmetricCroCo3DStereo (
                  freeze='none',
                  landscape_only=True,
                  patch_embed_cls='PatchEmbedDust3R',  # PatchEmbedDust3R or ManyAR_PatchEmbed
+                 semantic_attn_bias_scale=5.0,
                  **croco_kwargs):
         self.patch_embed_cls = patch_embed_cls
+        self.semantic_attn_bias_scale = semantic_attn_bias_scale
         self.croco_args = fill_default_args(croco_kwargs, super().__init__)
         super().__init__(**croco_kwargs)
 
@@ -168,7 +171,53 @@ class AsymmetricCroCo3DStereo (
 
         return (shape1, shape2), (feat1, feat2), (pos1, pos2)
 
-    def _decoder(self, f1, pos1, f2, pos2):
+    def _get_semantic_mask(self, view):
+        for key in ('semantic_mask', 'furniture_mask', 'attn_mask'):
+            if key in view:
+                return view[key]
+        return None
+
+    def _semantic_mask_to_patch_bias(self, view, image, true_shape, num_tokens):
+        mask = self._get_semantic_mask(view)
+        if mask is None or self.semantic_attn_bias_scale == 0:
+            return None
+
+        B, _, H, W = image.shape
+        patch_h, patch_w = self.patch_embed.patch_size
+        grid_h, grid_w = H // patch_h, W // patch_w
+
+        if mask.ndim == 2:
+            mask = mask[None, None]
+        elif mask.ndim == 3:
+            mask = mask[:, None]
+        elif mask.ndim == 4 and mask.shape[1] != 1:
+            mask = mask.amax(dim=1, keepdim=True)
+        assert mask.shape[:2] == (B, 1), f"semantic mask must have shape BxHxW or Bx1xHxW, got {mask.shape}"
+
+        mask = mask.to(device=image.device, dtype=image.dtype).clamp(0, 1)
+        if mask.shape[-2:] != (H, W):
+            mask = F.interpolate(mask, size=(H, W), mode='nearest')
+
+        true_shape = true_shape.to(device=image.device)
+        is_portrait = true_shape[:, 1] < true_shape[:, 0]
+        use_many_ar_layout = self.patch_embed_cls == 'ManyAR_PatchEmbed'
+
+        patch_masks = []
+        for b in range(B):
+            sample = mask[b:b + 1]
+            if use_many_ar_layout and is_portrait[b]:
+                sample = sample.transpose(-1, -2)
+                pooled = F.adaptive_avg_pool2d(sample, (grid_w, grid_h))
+            else:
+                pooled = F.adaptive_avg_pool2d(sample, (grid_h, grid_w))
+            patch_masks.append(pooled.flatten(1))
+
+        patch_mask = torch.cat(patch_masks, dim=0)
+        assert patch_mask.shape == (B, num_tokens), \
+            f"semantic mask has {patch_mask.shape[1]} tokens, expected {num_tokens}"
+        return -float(self.semantic_attn_bias_scale) * patch_mask[:, None, None, :]
+
+    def _decoder(self, f1, pos1, f2, pos2, cross_attn_bias12=None, cross_attn_bias21=None):
         final_output = [(f1, f2)]  # before projection
 
         # project to decoder dim
@@ -178,9 +227,9 @@ class AsymmetricCroCo3DStereo (
         final_output.append((f1, f2))
         for blk1, blk2 in zip(self.dec_blocks, self.dec_blocks2):
             # img1 side
-            f1, _ = blk1(*final_output[-1][::+1], pos1, pos2)
+            f1, _ = blk1(*final_output[-1][::+1], pos1, pos2, cross_attn_bias=cross_attn_bias12)
             # img2 side
-            f2, _ = blk2(*final_output[-1][::-1], pos2, pos1)
+            f2, _ = blk2(*final_output[-1][::-1], pos2, pos1, cross_attn_bias=cross_attn_bias21)
             # store the result
             final_output.append((f1, f2))
 
@@ -199,8 +248,11 @@ class AsymmetricCroCo3DStereo (
         # encode the two images --> B,S,D
         (shape1, shape2), (feat1, feat2), (pos1, pos2) = self._encode_symmetrized(view1, view2)
 
+        cross_attn_bias12 = self._semantic_mask_to_patch_bias(view2, view2['img'], shape2, feat2.shape[1])
+        cross_attn_bias21 = self._semantic_mask_to_patch_bias(view1, view1['img'], shape1, feat1.shape[1])
+
         # combine all ref images into object-centric representation
-        dec1, dec2 = self._decoder(feat1, pos1, feat2, pos2)
+        dec1, dec2 = self._decoder(feat1, pos1, feat2, pos2, cross_attn_bias12, cross_attn_bias21)
 
         with torch.cuda.amp.autocast(enabled=False):
             res1 = self._downstream_head(1, [tok.float() for tok in dec1], shape1)

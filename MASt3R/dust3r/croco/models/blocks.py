@@ -146,7 +146,7 @@ class CrossAttention(nn.Module):
         
         self.rope = rope
         
-    def forward(self, query, key, value, qpos, kpos):
+    def forward(self, query, key, value, qpos, kpos, attn_bias=None):
         B, Nq, C = query.shape
         Nk = key.shape[1]
         Nv = value.shape[1]
@@ -160,6 +160,8 @@ class CrossAttention(nn.Module):
             k = self.rope(k, kpos)
             
         attn = (q @ k.transpose(-2, -1)) * self.scale
+        if attn_bias is not None:
+            attn = attn + attn_bias.to(device=attn.device, dtype=attn.dtype)
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
 
@@ -183,10 +185,10 @@ class DecoderBlock(nn.Module):
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
         self.norm_y = norm_layer(dim) if norm_mem else nn.Identity()
 
-    def forward(self, x, y, xpos, ypos):
+    def forward(self, x, y, xpos, ypos, cross_attn_bias=None):
         x = x + self.drop_path(self.attn(self.norm1(x), xpos))
         y_ = self.norm_y(y)
-        x = x + self.drop_path(self.cross_attn(self.norm2(x), y_, y_, xpos, ypos))
+        x = x + self.drop_path(self.cross_attn(self.norm2(x), y_, y_, xpos, ypos, attn_bias=cross_attn_bias))
         x = x + self.drop_path(self.mlp(self.norm3(x)))
         return x, y
         
@@ -238,4 +240,3 @@ class PatchEmbed(nn.Module):
     def _init_weights(self):
         w = self.proj.weight.data
         torch.nn.init.xavier_uniform_(w.view([w.shape[0], -1])) 
-
