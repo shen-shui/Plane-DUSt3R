@@ -216,5 +216,9 @@ def transpose_to_landscape(view):
         assert view['pts3d'].shape == (height, width, 3)
         view['pts3d'] = view['pts3d'].swapaxes(0, 1)
 
+        if 'semantic_mask' in view:
+            assert view['semantic_mask'].shape == (height, width)
+            view['semantic_mask'] = view['semantic_mask'].swapaxes(0, 1)
+
         # transpose x and y pixels
         view['camera_intrinsics'] = view['camera_intrinsics'][[1, 0, 2]]
