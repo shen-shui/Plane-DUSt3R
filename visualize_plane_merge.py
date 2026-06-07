@@ -38,6 +38,12 @@ def parse_args():
         help="Floor-plan-like output image saved in each room result directory.",
     )
     parser.add_argument(
+        "--annotation_floorplan_output_name",
+        type=str,
+        default="floorplan_annotation_gt_pred.png",
+        help="Floor-plan output using scene annotation_3d.json room semantics as GT.",
+    )
+    parser.add_argument(
         "--scene_prefix",
         type=str,
         default="scene_",
@@ -275,6 +281,161 @@ def extract_pred_wall_segments(node_info, scale):
     return segments
 
 
+def load_annotation(annotation_path):
+    if not annotation_path.exists():
+        return None
+    data = json.loads(annotation_path.read_text())
+    return {
+        "raw": data,
+        "planes": {plane["ID"]: plane for plane in data.get("planes", [])},
+        "semantics": {semantic["ID"]: semantic for semantic in data.get("semantics", [])},
+    }
+
+
+def annotation_room_plane_ids(annotation, room_id):
+    semantic = annotation["semantics"].get(int(room_id))
+    if not semantic:
+        return []
+    return semantic.get("planeID", [])
+
+
+def annotation_plane_to_ref(plane, rt0):
+    pparam = np.concatenate([plane["normal"], [plane["offset"]]]).astype(np.float64)
+    pparam[-1] /= 1000
+    return pparam @ rt0
+
+
+def collect_annotation_gt_planes(annotation, room_id, rt0):
+    gt_planes = []
+    for plane_id in annotation_room_plane_ids(annotation, room_id):
+        plane = annotation["planes"].get(plane_id)
+        if not plane:
+            continue
+        pparam = annotation_plane_to_ref(plane, rt0)
+        label = plane.get("type", "plane")
+        gt_planes.append((f"gt_{plane_id}_{label}", pparam))
+    return gt_planes
+
+
+def extract_annotation_wall_segments(annotation, room_id, rt0):
+    raw = annotation["raw"]
+    planes = annotation["planes"]
+    junctions = {
+        junction["ID"]: np.asarray(junction["coordinate"], dtype=np.float64) / 1000
+        for junction in raw.get("junctions", [])
+    }
+    plane_line = raw.get("planeLineMatrix", [])
+    line_junction = raw.get("lineJunctionMatrix", [])
+    segments = []
+    world_to_ref = np.linalg.inv(rt0)
+
+    for plane_id in annotation_room_plane_ids(annotation, room_id):
+        plane = planes.get(plane_id)
+        if not plane or plane.get("type") != "wall":
+            continue
+        if plane_id >= len(plane_line):
+            continue
+
+        points = []
+        for line_id, linked in enumerate(plane_line[plane_id]):
+            if not linked or line_id >= len(line_junction):
+                continue
+            for junction_id, has_junction in enumerate(line_junction[line_id]):
+                if has_junction and junction_id in junctions:
+                    point_ref = world_to_ref @ np.r_[junctions[junction_id], 1.0]
+                    points.append(point_ref[:3])
+
+        if len(points) < 2:
+            continue
+        pts = np.asarray(points, dtype=np.float64)[:, [0, 2]]
+        center = pts.mean(axis=0)
+        _, _, vh = np.linalg.svd(pts - center, full_matrices=False)
+        direction = vh[0]
+        values = (pts - center) @ direction
+        p0 = center + direction * values.min()
+        p1 = center + direction * values.max()
+        if np.linalg.norm(p1 - p0) > 1e-4:
+            segments.append((f"gt_{plane_id}", p0, p1))
+    return segments
+
+
+def plot_annotation_floorplan(
+    result_dir,
+    annotation,
+    node_info,
+    rt0,
+    scale,
+    pred_planes,
+    output_name,
+):
+    room_id = int(result_dir.name)
+    gt_planes = collect_annotation_gt_planes(annotation, room_id, rt0)
+    matched_pred, matched_gt, _ = match_planes(pred_planes, gt_planes)
+    gt_segments = extract_annotation_wall_segments(annotation, room_id, rt0)
+    pred_segments = extract_pred_wall_segments(node_info, scale)
+    pred_name_to_index = {name: i for i, (name, _) in enumerate(pred_planes)}
+    gt_name_to_index = {}
+    for i, (name, _) in enumerate(gt_planes):
+        parts = name.split("_")
+        if len(parts) >= 2:
+            gt_name_to_index[f"gt_{parts[1]}"] = i
+
+    points = [p for _, p0, p1 in gt_segments + pred_segments for p in (p0, p1)]
+    if points:
+        pts = np.asarray(points)
+        center = np.median(pts, axis=0)
+        dist = np.linalg.norm(pts - center, axis=1)
+        keep = dist < max(1.0, np.percentile(dist, 95) * 1.5)
+        pts = pts[keep] if keep.any() else pts
+        xmin, zmin = pts.min(axis=0)
+        xmax, zmax = pts.max(axis=0)
+    else:
+        xmin, xmax, zmin, zmax = -1, 1, -1, 1
+    pad = max(xmax - xmin, zmax - zmin, 0.5) * 0.18
+    xmin, xmax, zmin, zmax = xmin - pad, xmax + pad, zmin - pad, zmax + pad
+
+    fig, ax = plt.subplots(figsize=(7, 7))
+    for name, p0, p1 in gt_segments:
+        gi = gt_name_to_index.get(name)
+        color = "#2ca02c" if gi in matched_gt else "#9e9e9e"
+        ax.plot([p0[0], p1[0]], [p0[1], p1[1]], color=color, lw=7, alpha=0.55)
+        mid = (p0 + p1) / 2
+        ax.text(mid[0], mid[1], name, color=color, fontsize=8)
+
+    for name, p0, p1 in pred_segments:
+        pi = pred_name_to_index.get(name)
+        color = "#1f77b4" if pi in matched_pred else "#d62728"
+        ax.plot([p0[0], p1[0]], [p0[1], p1[1]], color=color, lw=3, linestyle="--")
+        mid = (p0 + p1) / 2
+        ax.text(mid[0], mid[1], name, color=color, fontsize=8)
+
+    pred_count = len(pred_planes)
+    gt_count = len(gt_planes)
+    precision = len(matched_pred) / pred_count if pred_count else 0
+    recall = len(matched_gt) / gt_count if gt_count else 0
+    ax.set_title(
+        f"{result_dir.parent.name}/{result_dir.name} annotation floor plan\n"
+        f"plane matched {len(matched_pred)} | pred {pred_count} | gt {gt_count} | "
+        f"P {precision:.3f} / R {recall:.3f}"
+    )
+    ax.set_xlabel("x")
+    ax.set_ylabel("z")
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(zmin, zmax)
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(True, alpha=0.25)
+    ax.plot([], [], color="#2ca02c", lw=7, alpha=0.55, label="Annotation GT matched")
+    ax.plot([], [], color="#9e9e9e", lw=7, alpha=0.55, label="Annotation GT unmatched")
+    ax.plot([], [], color="#1f77b4", lw=3, linestyle="--", label="Pred matched")
+    ax.plot([], [], color="#d62728", lw=3, linestyle="--", label="Pred unmatched")
+    ax.legend(loc="upper right")
+    fig.tight_layout()
+    output_path = result_dir / output_name
+    fig.savefig(output_path, dpi=180)
+    plt.close(fig)
+    return output_path
+
+
 def plot_floorplan_segments(
     result_dir,
     gt_room_path,
@@ -344,7 +505,14 @@ def plot_floorplan_segments(
     return output_path
 
 
-def plot_room(result_dir, gt_room_path, output_name, floorplan_output_name):
+def plot_room(
+    result_dir,
+    gt_room_path,
+    output_name,
+    floorplan_output_name,
+    annotation_floorplan_output_name,
+    annotation,
+):
     node_path = result_dir / "node_data.json"
     dust3r_path = result_dir / "dust3r_output.npz"
     if not node_path.exists() or not dust3r_path.exists():
@@ -449,7 +617,19 @@ def plot_room(result_dir, gt_room_path, output_name, floorplan_output_name):
         matched_gt,
         floorplan_output_name,
     )
-    return output_path, floorplan_output
+    outputs = [output_path, floorplan_output]
+    if annotation:
+        annotation_output = plot_annotation_floorplan(
+            result_dir,
+            annotation,
+            node_info,
+            rt0,
+            scale,
+            pred_planes,
+            annotation_floorplan_output_name,
+        )
+        outputs.append(annotation_output)
+    return outputs
 
 
 def main():
@@ -462,16 +642,24 @@ def main():
         scene_name = scene_dir.name
         if not scene_name.startswith(args.scene_prefix):
             scene_name = f"{args.scene_prefix}{scene_name}"
+        annotation = load_annotation(gt_root / scene_name / "annotation_3d.json")
         for result_dir in sorted(p for p in scene_dir.iterdir() if p.is_dir()):
             gt_room_path = gt_root / scene_name / "2D_rendering" / result_dir.name / "perspective" / "full"
             if not gt_room_path.exists():
                 print(f"skip missing GT: {gt_room_path}")
                 continue
-            output = plot_room(result_dir, gt_room_path, args.output_name, args.floorplan_output_name)
+            output = plot_room(
+                result_dir,
+                gt_room_path,
+                args.output_name,
+                args.floorplan_output_name,
+                args.annotation_floorplan_output_name,
+                annotation,
+            )
             if output:
                 outputs.extend(output)
-                print(output[0])
-                print(output[1])
+                for item in output:
+                    print(item)
 
     print(f"wrote {len(outputs)} visualization(s)")
 
