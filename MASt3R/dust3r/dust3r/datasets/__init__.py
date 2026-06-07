@@ -9,6 +9,7 @@ from .habitat import Habitat  # noqa
 from .megadepth import MegaDepth  # noqa
 from .scannetpp import ScanNetpp  # noqa
 from .staticthings3d import StaticThings3D  # noqa
+from .structured3d import Structured3D  # noqa
 from .waymo import Waymo  # noqa
 from .wildrgbd import WildRGBD  # noqa
 
