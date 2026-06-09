@@ -35,6 +35,17 @@ plt.switch_backend('agg')
 metric_flag = False
 
 
+def str2bool(value):
+    if isinstance(value, bool):
+        return value
+    value = value.lower()
+    if value in ("yes", "true", "t", "1", "y"):
+        return True
+    if value in ("no", "false", "f", "0", "n"):
+        return False
+    raise argparse.ArgumentTypeError("Boolean value expected.")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Evaluate PlaneDust3r')
     parser.add_argument('--dust3r_model', type=str, required=True,
@@ -45,8 +56,12 @@ def parse_args():
                         help='Root path containing the scenes to process')
     parser.add_argument('--save_path', type=str, required=True,
                         help='Path to save the results')
-    parser.add_argument('--save_flag', type=bool, default=True,
+    parser.add_argument('--save_flag', type=str2bool, default=True,
                         help='Save the results')
+    parser.add_argument('--merge_variant', choices=["default", "conservative"], default="default",
+                        help='Plane merge strategy')
+    parser.add_argument('--force_merge', action='store_true',
+                        help='Recompute node_data.json even if it already exists')
     parser.add_argument('--device', type=str, default='cuda',
                         help='Device to run on (cuda/cpu)')
     return parser.parse_args()
@@ -73,7 +88,7 @@ if __name__ == "__main__":
     avg_results = np.zeros(5)
     room_count = 0
     whole_precision, whole_recall = 0, 0
-    save = False
+    save = args.save_flag
 
     view_results = {i: {"avg_results": np.zeros(5), 
                        "image_count": 0,
@@ -113,11 +128,18 @@ if __name__ == "__main__":
                     else:
                         plane_detection = extract_plane(image_list, noncuboid_model, cfg, save=save, filename=str(os.path.join(result_dir, 'plane_detection.json')))
                     
-                    if os.path.exists(os.path.join(result_dir, 'node_data.json')):
+                    if os.path.exists(os.path.join(result_dir, 'node_data.json')) and not args.force_merge:
                         with open(os.path.join(result_dir, "node_data.json"), 'r') as f:
                             node_info = json.load(f)
                     else:
-                        node_info = plane_merge(dust3r_output, plane_detection, save=save, filedir=result_dir, metric=metric_flag)
+                        node_info = plane_merge(
+                            dust3r_output,
+                            plane_detection,
+                            save=save,
+                            filedir=result_dir,
+                            metric=metric_flag,
+                            merge_variant=args.merge_variant,
+                        )
                     metric_results,precision,recall = metric_geodust3r(plane_detection, dust3r_output, node_info, image_list, save=save, filedir=result_dir, metric=metric_flag)
                     for result in metric_results:
                         view_results[len(image_list)-1]["avg_results"] += result

@@ -62,7 +62,17 @@ def project_line_segment_onto_2d_line(point1, point2, line_coefficients):
 
 
 
-def plane_merge(dust3r_output, plane_detection, vis = False, save = False, filedir = None, metric = False,image_size = (1280,720),dust3r_image_size = (512,288)):
+def plane_merge(
+    dust3r_output,
+    plane_detection,
+    vis=False,
+    save=False,
+    filedir=None,
+    metric=False,
+    image_size=(1280, 720),
+    dust3r_image_size=(512, 288),
+    merge_variant="default",
+):
     if metric:
         intersection_thresh = 0.1
         distance_thresh = 0.1
@@ -73,6 +83,14 @@ def plane_merge(dust3r_output, plane_detection, vis = False, save = False, filed
         distance_thresh = 0.005
         x_thresh = 0.03
         margin_value = 0.01
+
+    y_overlap_thresh = 0.2
+    if merge_variant == "conservative":
+        x_thresh *= 0.6
+        y_overlap_thresh = 0.35
+        margin_value *= 0.75
+    elif merge_variant != "default":
+        raise ValueError(f"Unknown merge_variant: {merge_variant}")
         
     scale_x = dust3r_image_size[0]/image_size[0]  # dust3r output 512*288 image, the original size of image is 1280*720
     scale_y = dust3r_image_size[1]/image_size[1]  
@@ -343,11 +361,11 @@ def plane_merge(dust3r_output, plane_detection, vis = False, save = False, filed
     # plt.axis('square')
    
     if len(vertical_lines)>0:
-        clusters_1 = cluster_lines(vertical_lines, horizontal_lines, x_thresh, 0.2, margin_value)
+        clusters_1 = cluster_lines(vertical_lines, horizontal_lines, x_thresh, y_overlap_thresh, margin_value)
     else:
         clusters_1 = []
     if len(horizontal_lines)>0:
-        clusters_2 = cluster_lines(horizontal_lines, vertical_lines, x_thresh, 0.2, margin_value)
+        clusters_2 = cluster_lines(horizontal_lines, vertical_lines, x_thresh, y_overlap_thresh, margin_value)
     else:
         clusters_2 = []
 
@@ -441,6 +459,8 @@ def plane_merge(dust3r_output, plane_detection, vis = False, save = False, filed
             "next":node.next.global_id if node.next is not None else None,
             "left_endpoint":node.left_endpoint.tolist() if node.left_endpoint is not None else None,
             "right_endpoint":node.right_endpoint.tolist() if node.right_endpoint is not None else None,
+            "line_count": len(clusters[i].lines),
+            "support_views": sorted(list({line.plane_pointer.image_id for line in clusters[i].lines})),
         }
         nodes.append(node_info)
     node_data["global_plane_info"] = nodes
@@ -448,6 +468,17 @@ def plane_merge(dust3r_output, plane_detection, vis = False, save = False, filed
     node_data["ceiling_pparam"] = sum_ceiling_pparam.tolist() if ceiling_count>0 else []
     node_data["planes"] = planes_global
     node_data["wall_relationship"] = wall_relationship
+    node_data["merge_variant"] = merge_variant
+    node_data["merge_diagnostics"] = {
+        "input_wall_candidates": len(planes),
+        "vertical_candidates": len(vertical_lines),
+        "horizontal_candidates": len(horizontal_lines),
+        "merged_walls": len(nodes),
+        "x_thresh": x_thresh,
+        "y_overlap_thresh": y_overlap_thresh,
+        "margin_value": margin_value,
+        "metric": metric,
+    }
 
 
     plt.axis('square')
