@@ -20,6 +20,13 @@ def parse_args():
     parser.add_argument("--output_root", required=True)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--keep_threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--filter_mode",
+        choices=["score", "weak_score"],
+        default="score",
+        help="score filters every candidate; weak_score filters only weakly supported short candidates.",
+    )
+    parser.add_argument("--weak_short_ratio", type=float, default=0.5)
     parser.add_argument("--min_walls", type=int, default=3)
     parser.add_argument("--refine", action="store_true", help="Apply predicted plane/endpoint deltas.")
     parser.add_argument("--scene_prefix", default="scene_")
@@ -73,6 +80,31 @@ def estimate_room_scale(room_dir, gt_root, scene_name):
     return scale
 
 
+def wall_length_xz(wall):
+    left = np.asarray(wall.get("left_endpoint"), dtype=np.float64)
+    right = np.asarray(wall.get("right_endpoint"), dtype=np.float64)
+    if left.shape[0] < 3 or right.shape[0] < 3:
+        return 0.0
+    return float(np.linalg.norm(right[[0, 2]] - left[[0, 2]]))
+
+
+def weak_candidate_mask(walls, valid_indices, weak_short_ratio):
+    lengths = np.asarray([wall_length_xz(walls[idx]) for idx in valid_indices], dtype=np.float64)
+    valid_lengths = lengths[lengths > 1e-6]
+    if len(valid_lengths) == 0:
+        return np.zeros(len(valid_indices), dtype=bool)
+    median_len = float(np.median(valid_lengths))
+    weak = []
+    for local_idx, old_idx in enumerate(valid_indices):
+        wall = walls[old_idx]
+        support_views = set(wall.get("support_views", []))
+        line_count = int(wall.get("line_count", 1))
+        weak_support = line_count <= 1 and len(support_views) <= 1
+        short = lengths[local_idx] < median_len * weak_short_ratio
+        weak.append(weak_support and short)
+    return np.asarray(weak, dtype=bool)
+
+
 def apply_room(model, room_dir, out_dir, gt_root, scene_name, args):
     node_path = room_dir / "node_data.json"
     if not node_path.exists():
@@ -106,7 +138,11 @@ def apply_room(model, room_dir, out_dir, gt_root, scene_name, args):
         plane_delta = outputs["plane_delta"][0].cpu().numpy()
         endpoint_delta = outputs["endpoint_delta"][0].cpu().numpy()
 
-    keep_local = scores >= args.keep_threshold
+    if args.filter_mode == "score":
+        keep_local = scores >= args.keep_threshold
+    else:
+        weak_local = weak_candidate_mask(walls, valid_indices, args.weak_short_ratio)
+        keep_local = (~weak_local) | (scores >= args.keep_threshold)
     if keep_local.sum() < args.min_walls:
         keep_local[np.argsort(scores)[-args.min_walls:]] = True
 
@@ -143,6 +179,8 @@ def apply_room(model, room_dir, out_dir, gt_root, scene_name, args):
     node_info["learnable_plane_merge"] = {
         "checkpoint": str(args.checkpoint),
         "keep_threshold": args.keep_threshold,
+        "filter_mode": args.filter_mode,
+        "weak_short_ratio": args.weak_short_ratio,
         "refine": args.refine,
         "input_walls": len(walls),
         "output_walls": len(new_walls),

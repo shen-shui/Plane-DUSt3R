@@ -63,6 +63,22 @@ python apply_learnable_plane_merge.py \
 
 Use `--refine` to also apply predicted plane and endpoint deltas. For the first ablation, compare filtering-only and refine variants separately.
 
+If plain score thresholding improves precision but hurts recall, use the hybrid weak-candidate mode:
+
+```bash
+python apply_learnable_plane_merge.py \
+  --source_result_root eval_results_sample500_conservative \
+  --gt_root ~/datasets/Structured3D \
+  --output_root eval_results_sample500_learnable_weak \
+  --checkpoint checkpoints/learnable_plane_merge_sample500.pt \
+  --filter_mode weak_score \
+  --keep_threshold 0.3 \
+  --weak_short_ratio 0.5 \
+  --device cuda
+```
+
+This keeps strongly supported wall candidates by default and only asks the model to remove short, single-view weak candidates.
+
 ## 5. Evaluate
 
 ```bash
