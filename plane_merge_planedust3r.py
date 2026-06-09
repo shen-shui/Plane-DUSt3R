@@ -61,6 +61,78 @@ def project_line_segment_onto_2d_line(point1, point2, line_coefficients):
     return projected_point1, projected_point2
 
 
+def plane_to_xz_line(plane):
+    plane = np.asarray(plane, dtype=np.float64)
+    norm = np.linalg.norm(plane[:3])
+    if norm > 0:
+        plane = plane / norm
+    return np.array([plane[0], plane[2], plane[3]], dtype=np.float64)
+
+
+def intersect_xz_lines(line1, line2):
+    a1, b1, c1 = line1
+    a2, b2, c2 = line2
+    matrix = np.array([[a1, b1], [a2, b2]], dtype=np.float64)
+    rhs = np.array([-c1, -c2], dtype=np.float64)
+    det = np.linalg.det(matrix)
+    if abs(det) < 1e-6:
+        return None
+    return np.linalg.solve(matrix, rhs)
+
+
+def assign_snap_endpoint(node, corner_xz, room_diag, max_snap_ratio=0.35):
+    if node.left_endpoint is None or node.right_endpoint is None:
+        return False
+    left_xz = np.asarray(node.left_endpoint, dtype=np.float64)[[0, 2]]
+    right_xz = np.asarray(node.right_endpoint, dtype=np.float64)[[0, 2]]
+    left_dist = np.linalg.norm(left_xz - corner_xz)
+    right_dist = np.linalg.norm(right_xz - corner_xz)
+    segment_len = max(np.linalg.norm(right_xz - left_xz), 1e-6)
+    max_snap_dist = max(segment_len * max_snap_ratio, room_diag * 0.08, 1e-4)
+    if min(left_dist, right_dist) > max_snap_dist:
+        return False
+
+    if left_dist <= right_dist:
+        updated = np.asarray(node.left_endpoint, dtype=np.float64).copy()
+        updated[[0, 2]] = corner_xz
+        node.left_endpoint = updated
+    else:
+        updated = np.asarray(node.right_endpoint, dtype=np.float64).copy()
+        updated[[0, 2]] = corner_xz
+        node.right_endpoint = updated
+    return True
+
+
+def snap_chain_endpoints(chains):
+    endpoint_points = []
+    for node in chains:
+        for endpoint in (node.left_endpoint, node.right_endpoint):
+            if endpoint is not None:
+                endpoint_points.append(np.asarray(endpoint, dtype=np.float64)[[0, 2]])
+    if len(endpoint_points) < 2:
+        return 0
+
+    points = np.asarray(endpoint_points)
+    room_diag = np.linalg.norm(points.max(axis=0) - points.min(axis=0))
+    snapped = 0
+    visited_pairs = set()
+    for node in chains:
+        for neighbor in (node.pre, node.next):
+            if neighbor is None:
+                continue
+            pair_key = tuple(sorted((node.global_id, neighbor.global_id)))
+            if pair_key in visited_pairs:
+                continue
+            visited_pairs.add(pair_key)
+            corner_xz = intersect_xz_lines(plane_to_xz_line(node.pparam), plane_to_xz_line(neighbor.pparam))
+            if corner_xz is None or not np.all(np.isfinite(corner_xz)):
+                continue
+            changed_node = assign_snap_endpoint(node, corner_xz, room_diag)
+            changed_neighbor = assign_snap_endpoint(neighbor, corner_xz, room_diag)
+            snapped += int(changed_node) + int(changed_neighbor)
+    return snapped
+
+
 
 def plane_merge(
     dust3r_output,
@@ -85,11 +157,14 @@ def plane_merge(
         margin_value = 0.01
 
     y_overlap_thresh = 0.2
-    if merge_variant == "conservative":
+    conservative_merge = merge_variant in ("conservative", "conservative_snap")
+    snap_endpoints = merge_variant in ("snap", "conservative_snap")
+
+    if conservative_merge:
         x_thresh *= 0.6
         y_overlap_thresh = 0.35
         margin_value *= 0.75
-    elif merge_variant != "default":
+    elif merge_variant not in ("default", "snap"):
         raise ValueError(f"Unknown merge_variant: {merge_variant}")
         
     scale_x = dust3r_image_size[0]/image_size[0]  # dust3r output 512*288 image, the original size of image is 1280*720
@@ -449,6 +524,8 @@ def plane_merge(
                 cur_right = right_point
         chains[i].left_endpoint = cur_left
         chains[i].right_endpoint = cur_right
+
+    snapped_endpoints = snap_chain_endpoints(chains) if snap_endpoints else 0
     
     for i, node in enumerate(chains):
         
@@ -474,6 +551,7 @@ def plane_merge(
         "vertical_candidates": len(vertical_lines),
         "horizontal_candidates": len(horizontal_lines),
         "merged_walls": len(nodes),
+        "snapped_endpoints": snapped_endpoints,
         "x_thresh": x_thresh,
         "y_overlap_thresh": y_overlap_thresh,
         "margin_value": margin_value,

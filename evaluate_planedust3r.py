@@ -58,8 +58,11 @@ def parse_args():
                         help='Path to save the results')
     parser.add_argument('--save_flag', type=str2bool, default=True,
                         help='Save the results')
-    parser.add_argument('--merge_variant', choices=["default", "conservative"], default="default",
-                        help='Plane merge strategy')
+    parser.add_argument(
+        '--merge_variant',
+        choices=["default", "conservative", "snap", "conservative_snap"],
+        default="default",
+        help='Plane merge strategy')
     parser.add_argument('--force_merge', action='store_true',
                         help='Recompute node_data.json even if it already exists')
     parser.add_argument('--device', type=str, default='cuda',
