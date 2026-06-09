@@ -18,8 +18,15 @@ def parse_args():
     parser.add_argument("--output_root", required=True, help="Output root for recomputed node_data.json files.")
     parser.add_argument(
         "--merge_variant",
-        choices=["default", "conservative", "snap", "conservative_snap", "conservative_supported"],
-        default="conservative_supported",
+        choices=[
+            "default",
+            "conservative",
+            "snap",
+            "conservative_snap",
+            "conservative_supported",
+            "conservative_supported_light",
+        ],
+        default="conservative_supported_light",
         help="Plane merge strategy to run.",
     )
     parser.add_argument("--force", action="store_true", help="Overwrite existing output node_data.json.")

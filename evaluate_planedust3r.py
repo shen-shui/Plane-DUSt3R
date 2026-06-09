@@ -60,7 +60,14 @@ def parse_args():
                         help='Save the results')
     parser.add_argument(
         '--merge_variant',
-        choices=["default", "conservative", "snap", "conservative_snap", "conservative_supported"],
+        choices=[
+            "default",
+            "conservative",
+            "snap",
+            "conservative_snap",
+            "conservative_supported",
+            "conservative_supported_light",
+        ],
         default="default",
         help='Plane merge strategy')
     parser.add_argument('--force_merge', action='store_true',

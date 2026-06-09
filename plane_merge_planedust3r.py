@@ -141,7 +141,7 @@ def chain_segment_length(node):
     return float(np.linalg.norm(p1 - p0))
 
 
-def filter_supported_chains(chains, clusters, images_num):
+def filter_supported_chains(chains, clusters, images_num, short_ratio=0.7):
     if images_num < 3 or len(chains) <= 4:
         return chains, clusters, 0
 
@@ -157,7 +157,7 @@ def filter_supported_chains(chains, clusters, images_num):
     for node, cluster, length in zip(chains, clusters, lengths):
         support_views = {line.plane_pointer.image_id for line in cluster.lines}
         weak_support = len(cluster.lines) <= 1 and len(support_views) <= 1
-        short_segment = length < median_len * 0.7
+        short_segment = length < median_len * short_ratio
         if weak_support and short_segment:
             removed += 1
             dropped_old_ids.add(node.global_id)
@@ -221,9 +221,15 @@ def plane_merge(
         margin_value = 0.01
 
     y_overlap_thresh = 0.2
-    conservative_merge = merge_variant in ("conservative", "conservative_snap", "conservative_supported")
+    conservative_merge = merge_variant in (
+        "conservative",
+        "conservative_snap",
+        "conservative_supported",
+        "conservative_supported_light",
+    )
     snap_endpoints = merge_variant in ("snap", "conservative_snap")
-    supported_filter = merge_variant == "conservative_supported"
+    supported_filter = merge_variant in ("conservative_supported", "conservative_supported_light")
+    supported_short_ratio = 0.4 if merge_variant == "conservative_supported_light" else 0.7
 
     if conservative_merge:
         x_thresh *= 0.6
@@ -592,7 +598,9 @@ def plane_merge(
 
     snapped_endpoints = snap_chain_endpoints(chains) if snap_endpoints else 0
     chains, clusters, filtered_walls = (
-        filter_supported_chains(chains, clusters, images_num) if supported_filter else (chains, clusters, 0)
+        filter_supported_chains(chains, clusters, images_num, supported_short_ratio)
+        if supported_filter
+        else (chains, clusters, 0)
     )
 
     planes_global = {}
@@ -629,6 +637,7 @@ def plane_merge(
         "merged_walls": len(nodes),
         "snapped_endpoints": snapped_endpoints,
         "filtered_walls": filtered_walls,
+        "supported_short_ratio": supported_short_ratio if supported_filter else None,
         "x_thresh": x_thresh,
         "y_overlap_thresh": y_overlap_thresh,
         "margin_value": margin_value,
