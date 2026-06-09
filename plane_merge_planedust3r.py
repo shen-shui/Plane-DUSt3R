@@ -133,6 +133,70 @@ def snap_chain_endpoints(chains):
     return snapped
 
 
+def chain_segment_length(node):
+    if node.left_endpoint is None or node.right_endpoint is None:
+        return 0.0
+    p0 = np.asarray(node.left_endpoint, dtype=np.float64)[[0, 2]]
+    p1 = np.asarray(node.right_endpoint, dtype=np.float64)[[0, 2]]
+    return float(np.linalg.norm(p1 - p0))
+
+
+def filter_supported_chains(chains, clusters, images_num):
+    if images_num < 3 or len(chains) <= 4:
+        return chains, clusters, 0
+
+    lengths = np.asarray([chain_segment_length(node) for node in chains], dtype=np.float64)
+    valid_lengths = lengths[lengths > 1e-4]
+    if len(valid_lengths) == 0:
+        return chains, clusters, 0
+
+    median_len = float(np.median(valid_lengths))
+    keep = []
+    dropped_old_ids = set()
+    removed = 0
+    for node, cluster, length in zip(chains, clusters, lengths):
+        support_views = {line.plane_pointer.image_id for line in cluster.lines}
+        weak_support = len(cluster.lines) <= 1 and len(support_views) <= 1
+        short_segment = length < median_len * 0.7
+        if weak_support and short_segment:
+            removed += 1
+            dropped_old_ids.add(node.global_id)
+            continue
+        keep.append((node.global_id, node, cluster))
+
+    if len(keep) < 3:
+        return chains, clusters, 0
+
+    old_to_new = {old_id: i for i, (old_id, _, _) in enumerate(keep)}
+    old_neighbors = {
+        old_id: (
+            node.pre.global_id if node.pre is not None else None,
+            node.next.global_id if node.next is not None else None,
+        )
+        for old_id, node, _ in keep
+    }
+    new_chains = [item[1] for item in keep]
+    new_clusters = [item[2] for item in keep]
+    new_to_old = {new_id: old_id for old_id, new_id in old_to_new.items()}
+
+    for old_node, old_cluster in zip(chains, clusters):
+        if old_node.global_id in dropped_old_ids:
+            for line in old_cluster.lines:
+                line.plane_pointer.global_id = None
+
+    for new_id, node in enumerate(new_chains):
+        node.global_id = new_id
+        for line in new_clusters[new_id].lines:
+            line.plane_pointer.global_id = new_id
+
+    for node in new_chains:
+        old_pre, old_next = old_neighbors[new_to_old[node.global_id]]
+        node.pre = new_chains[old_to_new[old_pre]] if old_pre in old_to_new else None
+        node.next = new_chains[old_to_new[old_next]] if old_next in old_to_new else None
+
+    return new_chains, new_clusters, removed
+
+
 
 def plane_merge(
     dust3r_output,
@@ -157,8 +221,9 @@ def plane_merge(
         margin_value = 0.01
 
     y_overlap_thresh = 0.2
-    conservative_merge = merge_variant in ("conservative", "conservative_snap")
+    conservative_merge = merge_variant in ("conservative", "conservative_snap", "conservative_supported")
     snap_endpoints = merge_variant in ("snap", "conservative_snap")
+    supported_filter = merge_variant == "conservative_supported"
 
     if conservative_merge:
         x_thresh *= 0.6
@@ -526,6 +591,17 @@ def plane_merge(
         chains[i].right_endpoint = cur_right
 
     snapped_endpoints = snap_chain_endpoints(chains) if snap_endpoints else 0
+    chains, clusters, filtered_walls = (
+        filter_supported_chains(chains, clusters, images_num) if supported_filter else (chains, clusters, 0)
+    )
+
+    planes_global = {}
+    for img_id in range(images_num):
+        mapped_ids = []
+        for plane in planeinfo_list[img_id]:
+            if plane.global_id is not None:
+                mapped_ids.append(plane.global_id)
+        planes_global[str(img_id)] = mapped_ids
     
     for i, node in enumerate(chains):
         
@@ -552,6 +628,7 @@ def plane_merge(
         "horizontal_candidates": len(horizontal_lines),
         "merged_walls": len(nodes),
         "snapped_endpoints": snapped_endpoints,
+        "filtered_walls": filtered_walls,
         "x_thresh": x_thresh,
         "y_overlap_thresh": y_overlap_thresh,
         "margin_value": margin_value,
