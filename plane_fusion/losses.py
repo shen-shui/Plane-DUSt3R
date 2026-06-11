@@ -110,9 +110,11 @@ def plane_fusion_loss(
                 pred_endpoints[b, :, None, :],
                 tgt_endpoints[None, :, :],
                 num_samples=chamfer_samples,
-            ).squeeze(-1)
+            )
             - logits[b].sigmoid().unsqueeze(-1)
         )
+        if cost.shape != (pred_lines.shape[1], tgt_lines.shape[0]):
+            raise RuntimeError(f"Unexpected matching cost shape: {tuple(cost.shape)}")
         pairs = match_single(cost)
         for pred_idx, tgt_idx in pairs:
             cls_targets[b, pred_idx] = 1.0
