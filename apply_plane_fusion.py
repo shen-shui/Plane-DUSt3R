@@ -20,6 +20,8 @@ def parse_args():
     parser.add_argument("--score_threshold", type=float, default=0.5)
     parser.add_argument("--min_walls", type=int, default=3)
     parser.add_argument("--max_walls", type=int, default=12)
+    parser.add_argument("--snap_to_candidate_lines", action="store_true")
+    parser.add_argument("--snap_distance_threshold", type=float, default=0.5)
     parser.add_argument("--scene_prefix", default="scene_")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--no_links", action="store_true")
@@ -99,6 +101,47 @@ def line_from_endpoints(endpoints):
     return np.array([normal[0], normal[1], offset], dtype=np.float64)
 
 
+def segment_chamfer_distance_np(pred, target, num_samples=16):
+    pred = np.asarray(pred, dtype=np.float64)
+    target = np.asarray(target, dtype=np.float64)
+    steps = np.linspace(0.0, 1.0, num_samples, dtype=np.float64)[:, None]
+    pred_points = pred[:2] * (1.0 - steps) + pred[2:] * steps
+    target_points = target[:2] * (1.0 - steps) + target[2:] * steps
+    distances = np.linalg.norm(pred_points[:, None, :] - target_points[None, :, :], axis=-1)
+    return float(0.5 * (distances.min(axis=1).mean() + distances.min(axis=0).mean()))
+
+
+def project_endpoints_to_line(endpoints, line):
+    endpoints = np.asarray(endpoints, dtype=np.float64)
+    line = np.asarray(line, dtype=np.float64)
+    norm = np.linalg.norm(line[:2])
+    if norm < 1e-6:
+        return endpoints
+    normal = line[:2] / norm
+    offset = line[2] / norm
+    points = endpoints.reshape(2, 2)
+    signed_distance = points @ normal + offset
+    projected = points - signed_distance[:, None] * normal[None, :]
+    return projected.reshape(4)
+
+
+def snap_to_candidate_line(endpoints, candidate_endpoints, max_distance):
+    if len(candidate_endpoints) == 0:
+        return endpoints, False, None
+    distances = np.asarray(
+        [segment_chamfer_distance_np(endpoints, candidate) for candidate in candidate_endpoints],
+        dtype=np.float64,
+    )
+    best_idx = int(distances.argmin())
+    best_distance = float(distances[best_idx])
+    if max_distance is not None and best_distance > max_distance:
+        return endpoints, False, best_distance
+    line = line_from_endpoints(candidate_endpoints[best_idx])
+    if line is None:
+        return endpoints, False, best_distance
+    return project_endpoints_to_line(endpoints, line), True, best_distance
+
+
 def make_wall(index, line, endpoints, scale, y_value, score):
     line = np.asarray(line, dtype=np.float64)
     endpoints = np.asarray(endpoints, dtype=np.float64)
@@ -150,8 +193,24 @@ def apply_room(model, room_dir, data_path, out_dir, args):
 
     scale = infer_scale(node_info, features)
     y_value = wall_y_value(node_info)
+    candidate_endpoints = features[:, 4:8].astype(np.float64) if features.shape[1] >= 8 else np.zeros((0, 4))
+    snap_count = 0
+    snapped_endpoints = []
+    snap_distances = []
+    for idx in keep:
+        endpoint = endpoints[idx]
+        if args.snap_to_candidate_lines:
+            endpoint, snapped, distance = snap_to_candidate_line(
+                endpoint,
+                candidate_endpoints,
+                args.snap_distance_threshold,
+            )
+            snap_count += int(snapped)
+            if distance is not None:
+                snap_distances.append(distance)
+        snapped_endpoints.append(endpoint)
     walls = [
-        make_wall(new_idx, lines[idx], endpoints[idx], scale, y_value, scores[idx])
+        make_wall(new_idx, lines[idx], snapped_endpoints[new_idx], scale, y_value, scores[idx])
         for new_idx, idx in enumerate(keep)
     ]
     node_info["global_plane_info"] = walls
@@ -163,6 +222,10 @@ def apply_room(model, room_dir, data_path, out_dir, args):
         "max_walls": args.max_walls,
         "input_candidates": int(len(features)),
         "output_walls": int(len(walls)),
+        "snap_to_candidate_lines": bool(args.snap_to_candidate_lines),
+        "snap_distance_threshold": float(args.snap_distance_threshold),
+        "snapped_walls": int(snap_count),
+        "mean_snap_distance": float(np.mean(snap_distances)) if snap_distances else None,
     }
 
     out_dir.mkdir(parents=True, exist_ok=True)
