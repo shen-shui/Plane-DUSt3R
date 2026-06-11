@@ -26,6 +26,8 @@ def parse_args():
     parser.add_argument("--line_weight", type=float, default=2.0)
     parser.add_argument("--endpoint_weight", type=float, default=0.5)
     parser.add_argument("--consistency_weight", type=float, default=0.5)
+    parser.add_argument("--chamfer_weight", type=float, default=1.0)
+    parser.add_argument("--chamfer_samples", type=int, default=16)
     parser.add_argument("--no_object_weight", type=float, default=0.1)
     parser.add_argument("--val_ratio", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=0)
@@ -52,6 +54,7 @@ def run_epoch(model, loader, optimizer, args, train=True):
         "line_loss": 0.0,
         "endpoint_loss": 0.0,
         "consistency_loss": 0.0,
+        "chamfer_loss": 0.0,
     }
     steps = 0
     for batch in loader:
@@ -64,6 +67,8 @@ def run_epoch(model, loader, optimizer, args, train=True):
                 line_weight=args.line_weight,
                 endpoint_weight=args.endpoint_weight,
                 consistency_weight=args.consistency_weight,
+                chamfer_weight=args.chamfer_weight,
+                chamfer_samples=args.chamfer_samples,
                 no_object_weight=args.no_object_weight,
             )
             if train:
@@ -120,7 +125,8 @@ def main():
             f"cls={val_stats['cls_loss']:.4f} "
             f"line={val_stats['line_loss']:.4f} "
             f"end={val_stats['endpoint_loss']:.4f} "
-            f"cons={val_stats['consistency_loss']:.4f}"
+            f"cons={val_stats['consistency_loss']:.4f} "
+            f"chamfer={val_stats['chamfer_loss']:.4f}"
         )
         if val_stats["loss"] < best_val:
             best_val = val_stats["loss"]

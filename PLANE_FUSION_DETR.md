@@ -19,23 +19,29 @@ The first version trains from the `.npz` files exported by `export_learnable_mer
 ```bash
 CUDA_VISIBLE_DEVICES=0 python train_plane_fusion.py \
   --data_dir learnable_merge_data_sample2000 \
-  --output checkpoints/plane_fusion_detr_sample2000.pt \
+  --output checkpoints/plane_fusion_detr_sample2000_chamfer.pt \
   --epochs 100 \
   --batch_size 16 \
   --line_weight 2.0 \
   --endpoint_weight 0.5 \
   --consistency_weight 0.5 \
+  --chamfer_weight 1.0 \
+  --chamfer_samples 16 \
   --device cuda
 ```
+
+`chamfer_weight` directly supervises the full predicted wall segment by sampling points
+along predicted and target endpoints. This is usually more aligned with
+`floorplan_line_iou` than endpoint-only regression.
 
 ## Apply To Sample500
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python apply_plane_fusion.py \
-  --source_result_root eval_results_sample500_conservative \
-  --data_dir learnable_merge_data_sample500 \
-  --output_root eval_results_sample500_plane_fusion \
-  --checkpoint checkpoints/plane_fusion_detr_sample2000.pt \
+    --source_result_root eval_results_sample500_conservative \
+    --data_dir learnable_merge_data_sample500 \
+    --output_root eval_results_sample500_plane_fusion_chamfer \
+    --checkpoint checkpoints/plane_fusion_detr_sample2000_chamfer.pt \
   --score_threshold 0.5 \
   --device cuda
 ```
@@ -48,20 +54,20 @@ for t in 0.2 0.3 0.4 0.5 0.6; do
   CUDA_VISIBLE_DEVICES=0 python apply_plane_fusion.py \
     --source_result_root eval_results_sample500_conservative \
     --data_dir learnable_merge_data_sample500 \
-    --output_root eval_results_sample500_plane_fusion_t${tag} \
-    --checkpoint checkpoints/plane_fusion_detr_sample2000.pt \
+    --output_root eval_results_sample500_plane_fusion_chamfer_t${tag} \
+    --checkpoint checkpoints/plane_fusion_detr_sample2000_chamfer.pt \
     --score_threshold $t \
     --device cuda
 
   python evaluate_floorplan.py \
-    --result_root eval_results_sample500_plane_fusion_t${tag} \
+    --result_root eval_results_sample500_plane_fusion_chamfer_t${tag} \
     --gt_root ~/datasets/Structured3D \
-    --output_csv floorplan_metrics_sample500_plane_fusion_t${tag}.csv
+    --output_csv floorplan_metrics_sample500_plane_fusion_chamfer_t${tag}.csv
 
   python compare_floorplan_metrics.py \
-    --baseline_csv floorplan_metrics_sample500.csv \
-    --candidate_csv floorplan_metrics_sample500_plane_fusion_t${tag}.csv \
-    --output_csv floorplan_metric_delta_plane_fusion_t${tag}.csv
+    --baseline_csv floorplan_metrics_sample500_v2.csv \
+    --candidate_csv floorplan_metrics_sample500_plane_fusion_chamfer_t${tag}.csv \
+    --output_csv floorplan_metric_delta_plane_fusion_chamfer_t${tag}.csv
 done
 ```
 
