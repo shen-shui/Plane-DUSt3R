@@ -85,13 +85,31 @@ def wall_y_value(node_info):
     return float(np.median(values)) if values else 0.0
 
 
+def line_from_endpoints(endpoints):
+    endpoints = np.asarray(endpoints, dtype=np.float64)
+    p0 = endpoints[:2]
+    p1 = endpoints[2:]
+    direction = p1 - p0
+    length = np.linalg.norm(direction)
+    if length < 1e-6:
+        return None
+    normal = np.array([direction[1], -direction[0]], dtype=np.float64) / length
+    center = (p0 + p1) / 2
+    offset = -float(np.dot(normal, center))
+    return np.array([normal[0], normal[1], offset], dtype=np.float64)
+
+
 def make_wall(index, line, endpoints, scale, y_value, score):
     line = np.asarray(line, dtype=np.float64)
     endpoints = np.asarray(endpoints, dtype=np.float64)
     p0 = endpoints[:2] / scale
     p1 = endpoints[2:] / scale
-    normal_norm = max(np.linalg.norm(line[:2]), 1e-6)
-    line = line / normal_norm
+    endpoint_line = line_from_endpoints(endpoints)
+    if endpoint_line is not None:
+        line = endpoint_line
+    else:
+        normal_norm = max(np.linalg.norm(line[:2]), 1e-6)
+        line = line / normal_norm
     return {
         "index": index,
         "pparam": [float(line[0]), 0.0, float(line[1]), float(line[2] / scale)],
