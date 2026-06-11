@@ -105,11 +105,15 @@ def make_wall(index, line, endpoints, scale, y_value, score):
     p0 = endpoints[:2] / scale
     p1 = endpoints[2:] / scale
     endpoint_line = line_from_endpoints(endpoints)
+    line_norm = np.linalg.norm(line[:2])
+    if line_norm > 1e-6:
+        line = line / line_norm
     if endpoint_line is not None:
+        if line_norm > 1e-6 and np.dot(endpoint_line[:2], line[:2]) < 0:
+            endpoint_line = -endpoint_line
         line = endpoint_line
     else:
-        normal_norm = max(np.linalg.norm(line[:2]), 1e-6)
-        line = line / normal_norm
+        line = line if line_norm > 1e-6 else np.array([1.0, 0.0, 0.0], dtype=np.float64)
     return {
         "index": index,
         "pparam": [float(line[0]), 0.0, float(line[1]), float(line[2] / scale)],
