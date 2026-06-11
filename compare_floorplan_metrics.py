@@ -9,6 +9,7 @@ METRIC_KEYS = [
     "wall_precision",
     "wall_recall",
     "floorplan_polygon_iou",
+    "floorplan_line_iou",
     "mean_angle_error_deg",
     "mean_offset_error_m",
     "mean_endpoint_error_m",

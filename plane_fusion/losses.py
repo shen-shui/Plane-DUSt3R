@@ -14,6 +14,23 @@ def endpoint_l1_cost(pred, target):
     return torch.minimum(direct, flipped)
 
 
+def line_from_endpoints(endpoints):
+    p0 = endpoints[..., :2]
+    p1 = endpoints[..., 2:]
+    direction = p1 - p0
+    length = direction.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+    normal = torch.stack([direction[..., 1], -direction[..., 0]], dim=-1) / length
+    center = (p0 + p1) / 2
+    offset = -(normal * center).sum(dim=-1, keepdim=True)
+    return torch.cat([normal, offset], dim=-1)
+
+
+def oriented_line_l1(pred, target):
+    direct = F.smooth_l1_loss(pred, target, reduction="none").mean(dim=-1)
+    flipped = F.smooth_l1_loss(pred, -target, reduction="none").mean(dim=-1)
+    return torch.minimum(direct, flipped)
+
+
 def match_single(cost):
     cost_np = cost.detach().cpu().numpy()
     try:
@@ -40,7 +57,14 @@ def match_single(cost):
         return pairs
 
 
-def plane_fusion_loss(outputs, batch, line_weight=1.0, endpoint_weight=1.0, no_object_weight=0.1):
+def plane_fusion_loss(
+    outputs,
+    batch,
+    line_weight=2.0,
+    endpoint_weight=0.5,
+    consistency_weight=0.5,
+    no_object_weight=0.1,
+):
     logits = outputs["logits"]
     pred_lines = outputs["line"]
     pred_endpoints = outputs["endpoints"]
@@ -51,6 +75,7 @@ def plane_fusion_loss(outputs, batch, line_weight=1.0, endpoint_weight=1.0, no_o
     cls_targets = torch.zeros_like(logits)
     line_losses = []
     endpoint_losses = []
+    consistency_losses = []
 
     for b in range(logits.shape[0]):
         valid = target_mask[b]
@@ -74,6 +99,8 @@ def plane_fusion_loss(outputs, batch, line_weight=1.0, endpoint_weight=1.0, no_o
             flipped_tgt = torch.cat([tgt_endpoints[tgt_idx, 2:], tgt_endpoints[tgt_idx, :2]], dim=0)
             flipped = F.smooth_l1_loss(pred_endpoints[b, pred_idx], flipped_tgt, reduction="none").mean()
             endpoint_losses.append(torch.minimum(direct, flipped))
+            endpoint_line = line_from_endpoints(pred_endpoints[b, pred_idx])
+            consistency_losses.append(oriented_line_l1(pred_lines[b, pred_idx], endpoint_line))
 
     pos_weight = torch.ones_like(logits)
     pos_weight[cls_targets < 0.5] = no_object_weight
@@ -81,14 +108,17 @@ def plane_fusion_loss(outputs, batch, line_weight=1.0, endpoint_weight=1.0, no_o
     if line_losses:
         line_loss = torch.stack(line_losses).mean()
         endpoint_loss = torch.stack(endpoint_losses).mean()
+        consistency_loss = torch.stack(consistency_losses).mean()
     else:
         line_loss = pred_lines.sum() * 0.0
         endpoint_loss = pred_endpoints.sum() * 0.0
+        consistency_loss = pred_lines.sum() * 0.0
 
-    total = cls_loss + line_weight * line_loss + endpoint_weight * endpoint_loss
+    total = cls_loss + line_weight * line_loss + endpoint_weight * endpoint_loss + consistency_weight * consistency_loss
     return {
         "loss": total,
         "cls_loss": cls_loss.detach(),
         "line_loss": line_loss.detach(),
         "endpoint_loss": endpoint_loss.detach(),
+        "consistency_loss": consistency_loss.detach(),
     }

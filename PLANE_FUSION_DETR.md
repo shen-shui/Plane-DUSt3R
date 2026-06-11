@@ -22,6 +22,9 @@ CUDA_VISIBLE_DEVICES=0 python train_plane_fusion.py \
   --output checkpoints/plane_fusion_detr_sample2000.pt \
   --epochs 100 \
   --batch_size 16 \
+  --line_weight 2.0 \
+  --endpoint_weight 0.5 \
+  --consistency_weight 0.5 \
   --device cuda
 ```
 
@@ -65,5 +68,12 @@ done
 ## Notes
 
 This is intentionally separate from DUSt3R backbone training. It targets the failure mode observed in evaluation: multi-view wall merge and 2D floor-plan formation.
+
+Use both metrics when comparing outputs:
+
+```text
+floorplan_polygon_iou: area overlap of the inferred polygon; can be optimistic for messy wall sets.
+floorplan_line_iou: rasterized wall-line overlap; stricter for actual wall alignment.
+```
 
 If this query-based wall head improves `floorplan_polygon_iou`, the next step is to connect it more tightly to DUSt3R/plane detector features instead of using cached candidate tokens.

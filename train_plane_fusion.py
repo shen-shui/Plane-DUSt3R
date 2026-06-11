@@ -23,8 +23,9 @@ def parse_args():
     parser.add_argument("--num_decoder_layers", type=int, default=3)
     parser.add_argument("--num_heads", type=int, default=8)
     parser.add_argument("--num_queries", type=int, default=16)
-    parser.add_argument("--line_weight", type=float, default=1.0)
-    parser.add_argument("--endpoint_weight", type=float, default=1.0)
+    parser.add_argument("--line_weight", type=float, default=2.0)
+    parser.add_argument("--endpoint_weight", type=float, default=0.5)
+    parser.add_argument("--consistency_weight", type=float, default=0.5)
     parser.add_argument("--no_object_weight", type=float, default=0.1)
     parser.add_argument("--val_ratio", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=0)
@@ -45,7 +46,13 @@ def move_to_device(batch, device):
 
 def run_epoch(model, loader, optimizer, args, train=True):
     model.train(train)
-    totals = {"loss": 0.0, "cls_loss": 0.0, "line_loss": 0.0, "endpoint_loss": 0.0}
+    totals = {
+        "loss": 0.0,
+        "cls_loss": 0.0,
+        "line_loss": 0.0,
+        "endpoint_loss": 0.0,
+        "consistency_loss": 0.0,
+    }
     steps = 0
     for batch in loader:
         batch = move_to_device(batch, args.device)
@@ -56,6 +63,7 @@ def run_epoch(model, loader, optimizer, args, train=True):
                 batch,
                 line_weight=args.line_weight,
                 endpoint_weight=args.endpoint_weight,
+                consistency_weight=args.consistency_weight,
                 no_object_weight=args.no_object_weight,
             )
             if train:
@@ -111,7 +119,8 @@ def main():
             f"val={val_stats['loss']:.4f} "
             f"cls={val_stats['cls_loss']:.4f} "
             f"line={val_stats['line_loss']:.4f} "
-            f"end={val_stats['endpoint_loss']:.4f}"
+            f"end={val_stats['endpoint_loss']:.4f} "
+            f"cons={val_stats['consistency_loss']:.4f}"
         )
         if val_stats["loss"] < best_val:
             best_val = val_stats["loss"]

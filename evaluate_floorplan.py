@@ -93,6 +93,60 @@ def polygon_iou(pred_segments, gt_segments):
     return pred_poly.intersection(gt_poly).area / union
 
 
+def rasterize_segments(segments, bounds, resolution=256, thickness=2):
+    xmin, ymin, xmax, ymax = bounds
+    scale = (resolution - 1) / max(xmax - xmin, ymax - ymin, 1e-6)
+    mask = np.zeros((resolution, resolution), dtype=bool)
+
+    def to_pixel(point):
+        x = int(round((point[0] - xmin) * scale))
+        y = int(round((point[1] - ymin) * scale))
+        return np.clip(x, 0, resolution - 1), np.clip(y, 0, resolution - 1)
+
+    for _, p0, p1 in segments:
+        x0, y0 = to_pixel(np.asarray(p0, dtype=np.float64))
+        x1, y1 = to_pixel(np.asarray(p1, dtype=np.float64))
+        steps = max(abs(x1 - x0), abs(y1 - y0), 1)
+        xs = np.linspace(x0, x1, steps + 1).round().astype(np.int64)
+        ys = np.linspace(y0, y1, steps + 1).round().astype(np.int64)
+        mask[ys, xs] = True
+
+    if thickness <= 0:
+        return mask
+    dilated = mask.copy()
+    for dy in range(-thickness, thickness + 1):
+        for dx in range(-thickness, thickness + 1):
+            if dx * dx + dy * dy > thickness * thickness:
+                continue
+            y_src0 = max(0, -dy)
+            y_src1 = min(resolution, resolution - dy)
+            x_src0 = max(0, -dx)
+            x_src1 = min(resolution, resolution - dx)
+            y_dst0 = max(0, dy)
+            y_dst1 = min(resolution, resolution + dy)
+            x_dst0 = max(0, dx)
+            x_dst1 = min(resolution, resolution + dx)
+            dilated[y_dst0:y_dst1, x_dst0:x_dst1] |= mask[y_src0:y_src1, x_src0:x_src1]
+    return dilated
+
+
+def line_map_iou(pred_segments, gt_segments, resolution=256, thickness=2):
+    points = [p for _, p0, p1 in pred_segments + gt_segments for p in (p0, p1)]
+    if not points:
+        return float("nan")
+    pts = np.asarray(points, dtype=np.float64)
+    xmin, ymin = pts.min(axis=0)
+    xmax, ymax = pts.max(axis=0)
+    pad = max(xmax - xmin, ymax - ymin, 0.5) * 0.1
+    bounds = (xmin - pad, ymin - pad, xmax + pad, ymax + pad)
+    pred_mask = rasterize_segments(pred_segments, bounds, resolution=resolution, thickness=thickness)
+    gt_mask = rasterize_segments(gt_segments, bounds, resolution=resolution, thickness=thickness)
+    union = np.logical_or(pred_mask, gt_mask).sum()
+    if union == 0:
+        return float("nan")
+    return np.logical_and(pred_mask, gt_mask).sum() / union
+
+
 def get_view_count(result_dir):
     metric_path = result_dir / "metric_results.txt"
     if not metric_path.exists():
@@ -169,6 +223,7 @@ def evaluate_room(result_dir, gt_root, scene_name):
         "mean_offset_error_m": np.mean(offset_errors) if offset_errors else float("nan"),
         "mean_endpoint_error_m": np.mean(endpoint_errors) if endpoint_errors else float("nan"),
         "floorplan_polygon_iou": polygon_iou(pred_segments, gt_segments),
+        "floorplan_line_iou": line_map_iou(pred_segments, gt_segments),
     }
 
 
@@ -205,6 +260,7 @@ def main():
         "mean_offset_error_m",
         "mean_endpoint_error_m",
         "floorplan_polygon_iou",
+        "floorplan_line_iou",
     ]
     with open(args.output_csv, "w", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fields)
@@ -213,7 +269,14 @@ def main():
 
     if rows:
         print(f"wrote {len(rows)} rows to {args.output_csv}")
-        for key in ["plane_precision", "plane_recall", "wall_precision", "wall_recall", "floorplan_polygon_iou"]:
+        for key in [
+            "plane_precision",
+            "plane_recall",
+            "wall_precision",
+            "wall_recall",
+            "floorplan_polygon_iou",
+            "floorplan_line_iou",
+        ]:
             values = np.asarray([row[key] for row in rows], dtype=np.float64)
             values = values[np.isfinite(values)]
             if len(values):
